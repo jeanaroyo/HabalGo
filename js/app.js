@@ -1,5 +1,5 @@
 const $ = s => document.querySelector(s);
-const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;N'}[c]));
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const money = n => '₱' + Number(n || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
 const H = h => ({h});          // trusted HTML cell
 const cell = v => v && v.h !== undefined ? v.h : esc(v);
@@ -7,6 +7,13 @@ const TAG = {Completed:'ok',Paid:'ok',Assigned:'ok','In Progress':'bl',Confirmed
 const tag = s => H(`<span class="g ${TAG[s] || ''}">${esc(s)}</span>`);
 const L = a => a.map(x => [x, x]);
 const BS = ['Pending','Confirmed','In Progress','Completed','Cancelled'];
+function normalizePhone(value) {
+  let phone = value.trim().replace(/[\s().-]/g, '');
+  phone = phone.replace(/^00/, '+');
+  phone = phone.replace(/^\+?63(?=9\d{9}$)/, '0');
+  phone = phone.replace(/^9(?=\d{9}$)/, '09');
+  return /^(?:09\d{9}|\d{7,15}|\+[1-9]\d{7,14})$/.test(phone) ? phone : '';
+}
 
 async function api(t, m = 'GET', body, id) {
   const r = await fetch(`api.php?t=${t}${id ? '&id=' + id : ''}`, {method: m, headers: {'Content-Type': 'application/json'}, body: body ? JSON.stringify(body) : undefined});
@@ -18,11 +25,11 @@ async function api(t, m = 'GET', body, id) {
 /* field: [name, label, type, options (array or key of /options), optional] */
 const P = {
   dashboard: {t:'Dashboard'},
-  customers: {t:'Customers', one:'customer', f:[['name','Full name'],['phone','Phone','tel'],['email','Email','email']],
+  customers: {t:'Customers', one:'customer', f:[['name','Full name'],['phone','Phone number','tel'],['email','Email','email']],
     h:['Name','Phone','Email','Bookings'], r:x => [x.name, x.phone, x.email, x.bookings]},
   vehicles: {t:'Vehicles', one:'vehicle', f:[['plate_no','Plate no.'],['vehicle_type','Type','select',L(['Motorcycle','Tricycle','Car','Van'])],['model','Model'],['driver_id','Assigned driver','select','drivers',1]],
     h:['Plate no.','Type','Model','Assigned driver','Status'], r:x => [x.plate_no, x.vehicle_type, x.model, x.driver || '—', tag(x.driver ? 'Assigned' : 'Unassigned')]},
-  bookings: {t:'Bookings', one:'booking', cancel:1, f:[['customer_name','Customer name'],['pickup','Pickup address'],['pickup_city','Pickup city','select','cities'],['dropoff','Drop-off address'],['dropoff_city','Drop-off city','select','cities'],['driver_id','Driver','select','drivers',1],['booking_status','Status','select',L(BS)]],
+  bookings: {t:'Bookings', one:'booking', cancel:1, f:[['customer_name','Customer name'],['customer_phone','Customer phone (if new customer)','tel',null,1],['customer_email','Customer email (if new customer)','email',null,1],['pickup','Pickup address'],['pickup_city','Pickup city','select','cities'],['dropoff','Drop-off address'],['dropoff_city','Drop-off city','select','cities'],['driver_id','Driver','select','drivers',1],['booking_status','Status','select',L(BS)]],
     h:['ID','Customer','Route','Driver','Status','Date'], r:x => ['#' + x.id, x.customer, `${x.pickup} → ${x.dropoff}`, x.driver || 'Unassigned', tag(x.booking_status), x.date]},
   payments: {t:'Payments', one:'payment', f:[['booking_id','Booking','select','bookings'],['amount','Amount (₱)','number'],['method','Method','select',L(['Cash','GCash','Maya','Card'])],['status','Status','select',L(['Pending','Paid','Failed','Refunded'])]],
     h:['Booking','Customer','Amount','Method','Status'], r:x => ['#' + x.booking_id, x.customer, money(x.amount), x.method, tag(x.status)]},
@@ -72,9 +79,12 @@ async function openForm(id) {
   const fields = c.f.map(([k, l, type, o, opt]) => {
     const v = String(r[k] == null ? '' : r[k]), name = `name="${k}" id="f-${k}"`;
     let el;
-    if (type === 'select') el = `<select class="in" ${name}>${opt ? '<option value="">— none —</option>' : ''}${(typeof o === 'string' ? O[o] : o).map(([a, b]) => `<option value="${esc(a)}"${String(a) === v ? ' selected' : ''}>${esc(b)}</option>`).join('')}</select>`;
+    if (type === 'select') {
+      const emptyLabel = page === 'bookings' && k === 'driver_id' ? '— Random driver —' : '— none —';
+      el = `<select class="in" ${name}>${opt ? `<option value="">${emptyLabel}</option>` : ''}${(typeof o === 'string' ? O[o] : o).map(([a, b]) => `<option value="${esc(a)}"${String(a) === v ? ' selected' : ''}>${esc(b)}</option>`).join('')}</select>`;
+    }
     else if (type === 'textarea') el = `<textarea class="in" rows="3" ${name}>${esc(v)}</textarea>`;
-    else el = `<input class="in" ${name} type="${type || 'text'}" value="${esc(v)}"${type === 'number' ? ' min="0.01" step="0.01"' : ''}>`;
+    else el = `<input class="in" ${name} type="${type || 'text'}" value="${esc(v)}"${type === 'tel' ? ' inputmode="tel" autocomplete="tel" placeholder="e.g. +639175550123 or +1 202 555 0123"' : ''}${type === 'email' ? ' maxlength="254" autocomplete="email" placeholder="name@example.com"' : ''}${type === 'number' ? ' min="0.01" step="0.01"' : ''}>`;
     return `<label for="f-${k}">${l}</label>${el}`;
   }).join('');
   const d = document.createElement('div'); d.className = 'ov';
@@ -84,7 +94,17 @@ async function openForm(id) {
     if (e.target === d || e.target.dataset.x !== undefined) return d.remove();
     if (e.target.dataset.ok === undefined) return;
     const body = {};
-    for (const [k, l, , , opt] of c.f) { body[k] = d.querySelector(`#f-${k}`).value.trim(); if (!body[k] && !opt) return d.querySelector('#err').textContent = l + ' is required.'; }
+    for (const [k, l, , , opt] of c.f) {
+      body[k] = d.querySelector(`#f-${k}`).value.trim();
+      if (!body[k] && !opt) return d.querySelector('#err').textContent = l + ' is required.';
+      if (body[k] && ['phone', 'customer_phone'].includes(k)) {
+        body[k] = normalizePhone(body[k]);
+        if (!body[k]) return d.querySelector('#err').textContent = 'Enter a valid phone number, including its country code when applicable.';
+      }
+      if (body[k] && ['email', 'customer_email'].includes(k) && !d.querySelector(`#f-${k}`).checkValidity()) {
+        return d.querySelector('#err').textContent = 'Enter a valid email address, such as name@example.com.';
+      }
+    }
     try { await api(page, id ? 'PUT' : 'POST', body, id); d.remove(); render(); } catch (err) { d.querySelector('#err').textContent = err.message; }
   };
 }

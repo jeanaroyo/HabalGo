@@ -6,5 +6,5 @@ return [
   'port'   => getenv('DB_PORT') ?: '5432',
   'dbname' => getenv('DB_NAME') ?: 'habalgo',
   'user'   => getenv('DB_USER') ?: 'postgres',
-  'pass'   => getenv('DB_PASS') ?: '',
+  'pass'   => getenv('DB_PASS') ?: 'user',
 ];
